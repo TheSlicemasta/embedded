@@ -9,11 +9,52 @@ volatile uint8_t adc_ready_flag = 0;
 uint32_t adc_buffer[FILTER_ORDER] = {0};
 uint8_t buffer_index = 0;
 
-void setup() {
-  Serial.begin(9600);
+// Счетчик для неблокирующей задержки логов (100 тиков АЦП = 1 секунда)
+uint8_t log_timer_ticks = 0; 
 
+// Инициализация UART на регистрах (9600 бод)
+void uart_init(void) {
+    UBRR0H = 0;
+    UBRR0L = 103; // 16 МГц / (16 * 9600) - 1 = 103
+    UCSR0B = (1 << TXEN0); // Включить только передатчик
+    UCSR0C = (1 << UCSZ01) | (1 << UCSZ00); // 8-N-1
+}
+
+// Отправка символа
+void uart_print_char(char c) {
+    while (!(UCSR0A & (1 << UDRE0)));
+    UDR0 = c;
+}
+
+// Отправка строки
+void uart_print_str(const char* str) {
+    while (*str) {
+        uart_print_char(*str++);
+    }
+}
+
+// Функция для вывода чисел через регистры (чтобы убрать Serial полностью)
+void uart_print_num(uint32_t num) {
+    char buf[11];
+    uint8_t i = 0;
+    if (num == 0) {
+        uart_print_char('0');
+        return;
+    }
+    while (num > 0) {
+        buf[i++] = (num % 10) + '0';
+        num /= 10;
+    }
+    while (i > 0) {
+        uart_print_char(buf[--i]);
+    }
+}
+
+void setup() {
   // Блокируем глобальные прерывания на время инициализации периферии
   cli();
+
+  uart_init();
 
   // 1. Настройка GPIO на уровне регистров
   // Настройка порта PC0 (вход A0) и отключение цифрового буфера
@@ -86,44 +127,59 @@ void loop() {
     // Сглаживание сигнала фильтром
     uint32_t filtered_adc = moving_average(current_adc);
 
-    Serial.print("filtered_adc: ");
-    Serial.print(filtered_adc);
+    // Флаг для отправки лога (станет true раз в секунду)
+    bool should_log = false;
+    log_timer_ticks++;
+    if (log_timer_ticks >= 100) { // 100 тиков по 10 мс = 1000 мс (1 секунда)
+        log_timer_ticks = 0;
+        should_log = true;
+    }
 
     switch (filtered_adc) {
-      // Зона 1: от 0 до 204 (0% потенциометра)
       case 0 ... 204:
-        TCCR1A &= ~(1 << COM1A1);  // Отключаем аппаратный ШИМ для честного 0%
-        PORTB &= ~(1 << PORTB1);   // Не светится
-        Serial.println(" Зона 1: от 0 до 204 (0% потенциометра)");
+        TCCR1A &= ~(1 << COM1A1);  
+        PORTB &= ~(1 << PORTB1);   
+        if (should_log) {
+            uart_print_str("ADC: "); uart_print_num(filtered_adc);
+            uart_print_str(" | Zone 1 (0%)\r\n");
+        }
         break;
 
-      // Зона 2: от 205 до 409 (25% потенциометра)
       case 205 ... 409:
-        TCCR1A |= (1 << COM1A1);  // Включаем аппаратный ШИМ обратно
-        OCR1A = 3906;             // Светится 0.25 с, пауза 0.75 с
-        Serial.println(" Зона 2: от 205 до 409 (25% потенциометра)");
+        TCCR1A |= (1 << COM1A1);  
+        OCR1A = 3906;             
+        if (should_log) {
+            uart_print_str("ADC: "); uart_print_num(filtered_adc);
+            uart_print_str(" | Zone 2 (25%) | OCR1A: 3906\r\n");
+        }
         break;
 
-      // Зона 3: от 410 до 614 (50% потенциометра)
       case 410 ... 614:
         TCCR1A |= (1 << COM1A1);
-        OCR1A = 7812;  // Светится 0.5 с, пауза 0.5 с
-        Serial.println(" Зона 3: от 410 до 614 (50% потенциометра)");
+        OCR1A = 7812;  
+        if (should_log) {
+            uart_print_str("ADC: "); uart_print_num(filtered_adc);
+            uart_print_str(" | Zone 3 (50%) | OCR1A: 7812\r\n");
+        }
         break;
 
-      // Зона 4: от 615 до 819 (75% потенциометра)
       case 615 ... 819:
         TCCR1A |= (1 << COM1A1);
-        OCR1A = 11718;  // Светится 0.75 с, пауза 0.25 с
-        Serial.println(" Зона 4: от 615 до 819 (75% потенциометра)");
+        OCR1A = 11718;  
+        if (should_log) {
+            uart_print_str("ADC: "); uart_print_num(filtered_adc);
+            uart_print_str(" | Zone 4 (75%) | OCR1A: 11718\r\n");
+        }
         break;
 
-      // Зона 5: от 820 до 1023 (100% потенциометра)
       case 820 ... 1023:
       default:
-        TCCR1A &= ~(1 << COM1A1);  // Отключаем аппаратный ШИМ для честных 100%
-        PORTB |= (1 << PORTB1);    // Светится постоянно
-        Serial.println(" Зона 5: от 820 до 1023 (100% потенциометра)");
+        TCCR1A &= ~(1 << COM1A1);  
+        PORTB |= (1 << PORTB1);    
+        if (should_log) {
+            uart_print_str("ADC: "); uart_print_num(filtered_adc);
+            uart_print_str(" | Zone 5 (100%)\r\n");
+        }
         break;
     }
   }
